@@ -33,7 +33,7 @@ export default function App() {
     try {
       console.log("Sending clean data payload directly to Flask backend...");
       
-      let response = await fetch('http://127.0.0.1:5000/analyze', {
+      let response = await fetch('http://192.168.1.107:5000/analyze', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -79,6 +79,9 @@ export default function App() {
       {nutritionData && (
         <View style={styles.card}>
           <Text style={styles.foodName}>{nutritionData.food_name || "Analysis Result"}</Text>
+          {nutritionData.description ? (
+            <Text style={styles.descriptionText}>"{nutritionData.description}"</Text>
+          ) : null}
           <View style={styles.divider} />
           <Text style={styles.macroText}>🔥 Calories: {nutritionData.calories ?? 0} kcal</Text>
           <Text style={styles.macroText}>🥩 Protein: {nutritionData.protein ?? 0}g</Text>
@@ -144,8 +147,16 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: 'bold',
     color: '#00ffcc',
-    marginBottom: 10,
+    marginBottom: 5,
     textAlign: 'center',
+  },
+  descriptionText: {
+    fontSize: 16,
+    fontStyle: 'italic',
+    color: '#aaa',
+    textAlign: 'center',
+    marginBottom: 10,
+    paddingHorizontal: 10,
   },
   divider: {
     height: 1,
