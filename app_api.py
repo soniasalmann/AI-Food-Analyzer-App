@@ -17,13 +17,32 @@ CORS(app)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Prompt for the AI
+# Prompt for the AI (no annotation)
 PROMPT = """
 Analyze this food image and provide the nutritional information. the food can also be south asian dishes.
  if there are multiple food items in the image,
  provide the nutritional information for the most prominent one.
  if food cannot be reconized return with unkown to all the fields.
  if picture is food just say example:  "[some funny line about why you cant eat this food]"
+Return ONLY a JSON object with the following keys:
+"food_name", "calories", "protein", "carbs", "fat"
+
+Example format:
+{
+  "food_name": "Chicken Salad",
+  "calories": 350,
+  "protein": 30,
+  "carbs": 10,
+  "fat": 15
+}
+"""
+
+# Prompt for annotated images (user drew a green shape around specific food)
+ANNOTATED_PROMPT = """
+The user has drawn a bright green outline/shape on this food image to highlight a specific food item.
+Analyze ONLY the food that is inside or enclosed by the green drawn line. Ignore all other food items outside the green shape.
+The food can also be south asian dishes.
+If the food inside the green shape cannot be recognized, return with unknown to all fields.
 Return ONLY a JSON object with the following keys:
 "food_name", "calories", "protein", "carbs", "fat"
 
@@ -46,13 +65,16 @@ def analyze():
 
         # Create Content part for the new SDK
         image_data = data['image_data']
+        has_annotation = data.get('has_annotation', False)
         
-        print(f"Sending image to Gemini (google-genai) for analysis...")
+        # Pick the right prompt based on whether user drew on the image
+        selected_prompt = ANNOTATED_PROMPT if has_annotation else PROMPT
+        print(f"Sending image to Gemini (annotated={has_annotation}) for analysis...")
         
         response = client.models.generate_content(
             model="gemini-flash-lite-latest",
             contents=[
-                PROMPT,
+                selected_prompt,
                 types.Part.from_bytes(
                     data=base64.b64decode(image_data),
                     mime_type="image/jpeg"

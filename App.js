@@ -1,26 +1,76 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, Image, ActivityIndicator, ScrollView } from 'react-native';
+import React, { useState, useRef } from 'react';
+import { StyleSheet, Text, View, TouchableOpacity, Image, ActivityIndicator, ScrollView, PanResponder, Dimensions, StatusBar } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import Svg, { Polyline } from 'react-native-svg';
+import { captureRef } from 'react-native-view-shot';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const IMAGE_SIZE = SCREEN_WIDTH - 40; // Nearly full width with some padding
 
 export default function App() {
   const [image, setImage] = useState(null);
-  const [base64Data, setBase64Data] = useState(null); // Safely stores raw image text
+  const [base64Data, setBase64Data] = useState(null);
   const [loading, setLoading] = useState(false);
   const [nutritionData, setNutritionData] = useState(null);
+  const [paths, setPaths] = useState([]);
+  const [currentPath, setCurrentPath] = useState([]);
+  const [editMode, setEditMode] = useState(false); // true = show the editing/drawing screen
+  const imageContainerRef = useRef(null);
+
+  // PanResponder handles finger drawing on the image
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (evt) => {
+        const { locationX, locationY } = evt.nativeEvent;
+        setCurrentPath([`${locationX},${locationY}`]);
+      },
+      onPanResponderMove: (evt) => {
+        const { locationX, locationY } = evt.nativeEvent;
+        setCurrentPath((prev) => [...prev, `${locationX},${locationY}`]);
+      },
+      onPanResponderRelease: () => {
+        setCurrentPath((prev) => {
+          if (prev.length > 2) {
+            const closedPath = [...prev, prev[0]];
+            setPaths((existing) => [...existing, closedPath]);
+          }
+          return [];
+        });
+      },
+    })
+  ).current;
 
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
+      allowsEditing: false, // Skip system crop — we handle editing ourselves
       quality: 0.7,
-      base64: true, // Tells Expo to convert the image to base64 instantly
+      base64: true,
     });
 
     if (!result.canceled) {
       setImage(result.assets[0].uri);
-      setBase64Data(result.assets[0].base64); // Capture base64 text stream safely
+      setBase64Data(result.assets[0].base64);
       setNutritionData(null);
+      setPaths([]);
+      setCurrentPath([]);
+      setEditMode(true); // Go straight to our editing screen
     }
+  };
+
+  const clearDrawing = () => {
+    setPaths([]);
+    setCurrentPath([]);
+  };
+
+  const cancelEdit = () => {
+    setEditMode(false);
+    setImage(null);
+    setBase64Data(null);
+    setPaths([]);
+    setCurrentPath([]);
   };
 
   const analyzeImage = async () => {
@@ -29,17 +79,32 @@ export default function App() {
       return;
     }
     setLoading(true);
+    setEditMode(false); // Exit edit mode, show results on main screen
 
     try {
-      console.log("Sending clean data payload directly to Flask backend...");
+      let imageToSend = base64Data;
+      const hasDrawing = paths.length > 0;
+
+      if (hasDrawing && imageContainerRef.current) {
+        console.log("Capturing annotated image with drawing...");
+        const uri = await captureRef(imageContainerRef, {
+          format: 'jpg',
+          quality: 0.8,
+          result: 'base64',
+        });
+        imageToSend = uri;
+      }
+
+      console.log("Sending image to Flask backend...");
       
-      let response = await fetch('http://192.168.1.107:5000/analyze', {
+      let response = await fetch('http://10.126.152.61:5000/analyze', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          image_data: base64Data // No file systems or local fetch blobs needed!
+          image_data: imageToSend,
+          has_annotation: hasDrawing,
         }),
       });
       
@@ -58,23 +123,116 @@ export default function App() {
     }
   };
 
+  // ========== EDITING SCREEN (full screen drawing overlay) ==========
+  if (editMode && image) {
+    return (
+      <View style={styles.editScreen}>
+        <StatusBar barStyle="light-content" />
+        
+        {/* Top bar */}
+        <View style={styles.editTopBar}>
+          <TouchableOpacity onPress={cancelEdit}>
+            <Text style={styles.editTopButtonText}>✕ Cancel</Text>
+          </TouchableOpacity>
+          <Text style={styles.editTitle}>Select Food</Text>
+          <TouchableOpacity onPress={clearDrawing}>
+            <Text style={[styles.editTopButtonText, paths.length === 0 && { opacity: 0.3 }]}>
+              ↺ Clear
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Hint */}
+        <Text style={styles.editHint}>✏️ Draw around the food item you want to analyze</Text>
+
+        {/* Image + Drawing area */}
+        <View
+          ref={imageContainerRef}
+          style={styles.editImageContainer}
+          collapsable={false}
+        >
+          <Image source={{ uri: image }} style={styles.editImage} resizeMode="contain" />
+          
+          <View
+            style={styles.editDrawingOverlay}
+            {...panResponder.panHandlers}
+          >
+            <Svg height={IMAGE_SIZE} width={IMAGE_SIZE}>
+              {paths.map((path, index) => (
+                <Polyline
+                  key={index}
+                  points={path.join(' ')}
+                  fill="none"
+                  stroke="#00ff66"
+                  strokeWidth="3.5"
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              ))}
+              {currentPath.length > 0 && (
+                <Polyline
+                  points={currentPath.join(' ')}
+                  fill="none"
+                  stroke="#00ff66"
+                  strokeWidth="3.5"
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              )}
+            </Svg>
+          </View>
+        </View>
+
+        {/* Bottom action buttons */}
+        <View style={styles.editBottomBar}>
+          <TouchableOpacity
+            style={[styles.editActionButton, styles.editSkipButton]}
+            onPress={() => { setPaths([]); analyzeImage(); }}
+          >
+            <Text style={styles.editSkipButtonText}>🍽️ Analyze Full Image</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.editActionButton,
+              styles.editAnalyzeButton,
+              paths.length === 0 && { opacity: 0.4 },
+            ]}
+            onPress={analyzeImage}
+            disabled={paths.length === 0}
+          >
+            <Text style={styles.editAnalyzeButtonText}>🔍 Analyze Selected</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // ========== MAIN SCREEN (home + results) ==========
   return (
     <ScrollView contentContainerStyle={styles.container}>
+      <StatusBar barStyle="light-content" />
       <Text style={styles.title}>AI Food Analyzer</Text>
       
       <TouchableOpacity style={styles.button} onPress={pickImage}>
         <Text style={styles.buttonText}>📸 Select Food Image</Text>
       </TouchableOpacity>
 
-      {image && <Image source={{ uri: image }} style={styles.image} />}
-
-      {image && !loading && (
-        <TouchableOpacity style={[styles.button, styles.analyzeButton]} onPress={analyzeImage}>
-          <Text style={styles.buttonText}>Analyze Macros</Text>
-        </TouchableOpacity>
+      {image && (
+        <View style={styles.resultImageSection}>
+          <Image source={{ uri: image }} style={styles.resultImage} />
+          <TouchableOpacity style={styles.retakeButton} onPress={pickImage}>
+            <Text style={styles.retakeButtonText}>📷 Pick Another</Text>
+          </TouchableOpacity>
+        </View>
       )}
 
-      {loading && <ActivityIndicator size="large" color="#00ffcc" style={{ marginTop: 20 }} />}
+      {loading && (
+        <View style={styles.loadingSection}>
+          <ActivityIndicator size="large" color="#00ffcc" />
+          <Text style={styles.loadingText}>Analyzing your food...</Text>
+        </View>
+      )}
 
       {nutritionData && (
         <View style={styles.card}>
@@ -94,6 +252,7 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
+  // ========== MAIN SCREEN STYLES ==========
   container: {
     flexGrow: 1,
     backgroundColor: '#121212',
@@ -119,20 +278,41 @@ const styles = StyleSheet.create({
     width: '90%',
     alignItems: 'center',
   },
-  analyzeButton: {
-    backgroundColor: '#00ffcc',
-    borderColor: '#00ffcc',
-  },
   buttonText: {
-    color: '#121212',
+    color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
   },
-  image: {
-    width: 250,
-    height: 250,
+  resultImageSection: {
+    alignItems: 'center',
+    marginVertical: 10,
+  },
+  resultImage: {
+    width: 200,
+    height: 200,
     borderRadius: 15,
-    marginVertical: 20,
+  },
+  retakeButton: {
+    marginTop: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    backgroundColor: '#1f1f1f',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  retakeButtonText: {
+    color: '#aaa',
+    fontSize: 13,
+  },
+  loadingSection: {
+    marginTop: 20,
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: '#888',
+    marginTop: 10,
+    fontSize: 14,
   },
   card: {
     backgroundColor: '#1e1e1e',
@@ -168,11 +348,87 @@ const styles = StyleSheet.create({
     color: '#ddd',
     marginVertical: 5,
   },
+
+  // ========== EDITING SCREEN STYLES ==========
+  editScreen: {
+    flex: 1,
+    backgroundColor: '#0a0a0a',
+    paddingTop: 50,
+    alignItems: 'center',
+  },
+  editTopBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    paddingHorizontal: 20,
+    marginBottom: 10,
+  },
+  editTopButtonText: {
+    color: '#00ffcc',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  editTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  editHint: {
+    color: '#666',
+    fontSize: 13,
+    fontStyle: 'italic',
+    marginBottom: 15,
+  },
+  editImageContainer: {
+    width: IMAGE_SIZE,
+    height: IMAGE_SIZE,
+    borderRadius: 10,
+    overflow: 'hidden',
+    position: 'relative',
+    backgroundColor: '#000',
+  },
+  editImage: {
+    width: IMAGE_SIZE,
+    height: IMAGE_SIZE,
+  },
+  editDrawingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: IMAGE_SIZE,
+    height: IMAGE_SIZE,
+  },
+  editBottomBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+    paddingHorizontal: 20,
+    marginTop: 20,
+    gap: 10,
+  },
+  editActionButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  editSkipButton: {
+    backgroundColor: '#1f1f1f',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  editSkipButtonText: {
+    color: '#ccc',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  editAnalyzeButton: {
+    backgroundColor: '#00ffcc',
+  },
+  editAnalyzeButtonText: {
+    color: '#121212',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
 });
-
-
-
-
-
-
-

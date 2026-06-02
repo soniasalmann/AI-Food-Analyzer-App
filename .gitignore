@@ -1,2 +1,7 @@
 venv/
-node_modules
+node_modules/
+.env
+.expo/
+.claude/
+__pycache__/
+*.pyc
