@@ -79,26 +79,38 @@ export default function App() {
       return;
     }
     setLoading(true);
-    setEditMode(false); // Exit edit mode, show results on main screen
 
     try {
       let imageToSend = base64Data;
       const hasDrawing = paths.length > 0;
 
+      // IMPORTANT: Capture the view BEFORE exiting edit mode,
+      // because setEditMode(false) unmounts the image view
       if (hasDrawing && imageContainerRef.current) {
         console.log("Capturing annotated image with drawing...");
         const uri = await captureRef(imageContainerRef, {
           format: 'jpg',
-          quality: 0.8,
+          quality: 0.5,
           result: 'base64',
+          width: 400,
+          height: 400,
         });
         imageToSend = uri;
+        console.log("Captured image size:", Math.round(uri.length * 3 / 4 / 1024), "KB");
       }
+
+      // Now safe to exit edit mode — capture is done
+      setEditMode(false);
 
       console.log("Sending image to Flask backend...");
       
+      // 60-second timeout so the request doesn't hang forever
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
+
       let response = await fetch('http://10.126.152.61:5000/analyze', {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
         },
@@ -108,6 +120,8 @@ export default function App() {
         }),
       });
       
+      clearTimeout(timeoutId);
+
       if (!response.ok) {
         throw new Error(`Server returned error status: ${response.status}`);
       }
@@ -116,7 +130,11 @@ export default function App() {
       console.log("Macros pulled successfully:", data);
       setNutritionData(data);
     } catch (error) {
-      alert("Backend connection dropped. Ensure python app_api.py is running!");
+      if (error.name === 'AbortError') {
+        alert("Request timed out. The server took too long to respond. Please try again.");
+      } else {
+        alert("Backend connection dropped. Ensure python app_api.py is running!");
+      }
       console.error(error);
     } finally {
       setLoading(false);
