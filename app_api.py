@@ -101,7 +101,10 @@ def analyze():
                     data=image_bytes,
                     mime_type="image/jpeg"
                 )
-            ]
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0,  # Deterministic: same image = same result every time
+            )
         )
         
         # Free image bytes from memory
