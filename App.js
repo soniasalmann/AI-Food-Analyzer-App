@@ -44,8 +44,8 @@ export default function App() {
 
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: false, // Skip system crop — we handle editing ourselves
+      mediaTypes: ['images'], // Using string array as per common Expo 54 patterns
+      allowsEditing: false, 
       quality: 0.7,
       base64: true,
     });
@@ -56,7 +56,7 @@ export default function App() {
       setNutritionData(null);
       setPaths([]);
       setCurrentPath([]);
-      setEditMode(true); // Go straight to our editing screen
+      setEditMode(true); 
     }
   };
 
@@ -73,21 +73,23 @@ export default function App() {
     setCurrentPath([]);
   };
 
-  const analyzeImage = async () => {
+  const analyzeImage = async (forceSkipDrawing = false) => {
     if (!base64Data) {
       alert("Please select a food image first!");
       return;
     }
-    setLoading(true);
-    setEditMode(false); // Exit edit mode, show results on main screen
 
     try {
       let imageToSend = base64Data;
-      const hasDrawing = paths.length > 0;
+      const hasDrawing = paths.length > 0 && !forceSkipDrawing;
 
+      // 1. If we need to capture, wait a tiny bit to ensure the UI is stable
       if (hasDrawing && imageContainerRef.current) {
         console.log("Capturing annotated image with drawing...");
-        const uri = await captureRef(imageContainerRef, {
+        // Small delay to ensure any pending renders or layout changes are finished
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        const uri = await captureRef(imageContainerRef.current, {
           format: 'jpg',
           quality: 0.8,
           result: 'base64',
@@ -95,9 +97,13 @@ export default function App() {
         imageToSend = uri;
       }
 
+      // 2. Transition to loading state
+      setLoading(true);
+      setEditMode(false); 
+
       console.log("Sending image to Flask backend...");
       
-      let response = await fetch('http://10.126.152.61:5000/analyze', {
+      let response = await fetch('http://192.168.1.109:5000/analyze', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -116,7 +122,7 @@ export default function App() {
       console.log("Macros pulled successfully:", data);
       setNutritionData(data);
     } catch (error) {
-      alert("Backend connection dropped. Ensure python app_api.py is running!");
+      alert("Analysis failed. Check your backend and network connection!");
       console.error(error);
     } finally {
       setLoading(false);
@@ -187,7 +193,7 @@ export default function App() {
         <View style={styles.editBottomBar}>
           <TouchableOpacity
             style={[styles.editActionButton, styles.editSkipButton]}
-            onPress={() => { setPaths([]); analyzeImage(); }}
+            onPress={() => analyzeImage(true)}
           >
             <Text style={styles.editSkipButtonText}>🍽️ Analyze Full Image</Text>
           </TouchableOpacity>
@@ -198,7 +204,7 @@ export default function App() {
               styles.editAnalyzeButton,
               paths.length === 0 && { opacity: 0.4 },
             ]}
-            onPress={analyzeImage}
+            onPress={() => analyzeImage(false)}
             disabled={paths.length === 0}
           >
             <Text style={styles.editAnalyzeButtonText}>🔍 Analyze Selected</Text>
