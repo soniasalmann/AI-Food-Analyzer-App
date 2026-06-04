@@ -15,7 +15,26 @@ export default function App() {
   const [paths, setPaths] = useState([]);
   const [currentPath, setCurrentPath] = useState([]);
   const [editMode, setEditMode] = useState(false); // true = show the editing/drawing screen
+  const [servingSize, setServingSize] = useState('Medium'); // Serving size selector
   const imageContainerRef = useRef(null);
+
+  // Serving size multipliers
+  const SERVING_OPTIONS = [
+    { label: 'Small', multiplier: 0.5, emoji: '🍽️' },
+    { label: 'Medium', multiplier: 1.0, emoji: '🍽️🍽️' },
+    { label: 'Large', multiplier: 1.5, emoji: '🍽️🍽️🍽️' },
+    { label: 'Extra Large', multiplier: 2.0, emoji: '🍽️🍽️🍽️🍽️' },
+  ];
+
+  const getMultiplier = () => {
+    const option = SERVING_OPTIONS.find(o => o.label === servingSize);
+    return option ? option.multiplier : 1.0;
+  };
+
+  const getAdjustedValue = (value) => {
+    if (value === undefined || value === null) return 0;
+    return Math.round(Number(value) * getMultiplier());
+  };
 
   // PanResponder handles finger drawing on the image
   const panResponder = useRef(
@@ -56,7 +75,31 @@ export default function App() {
       setNutritionData(null);
       setPaths([]);
       setCurrentPath([]);
-      setEditMode(true); 
+      setServingSize('Medium');
+      setEditMode(true);
+    }
+  };
+
+  const takePhoto = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      alert('Camera permission is required to take photos!');
+      return;
+    }
+
+    let result = await ImagePicker.launchCameraAsync({
+      quality: 0.7,
+      base64: true,
+    });
+
+    if (!result.canceled) {
+      setImage(result.assets[0].uri);
+      setBase64Data(result.assets[0].base64);
+      setNutritionData(null);
+      setPaths([]);
+      setCurrentPath([]);
+      setServingSize('Medium');
+      setEditMode(true);
     }
   };
 
@@ -78,12 +121,14 @@ export default function App() {
       alert("Please select a food image first!");
       return;
     }
+    setLoading(true);
 
     try {
       let imageToSend = base64Data;
       const hasDrawing = paths.length > 0 && !forceSkipDrawing;
 
-      // 1. If we need to capture, wait a tiny bit to ensure the UI is stable
+      // IMPORTANT: Capture the view BEFORE exiting edit mode,
+      // because setEditMode(false) unmounts the image view
       if (hasDrawing && imageContainerRef.current) {
         console.log("Capturing annotated image with drawing...");
         // Small delay to ensure any pending renders or layout changes are finished
@@ -91,29 +136,39 @@ export default function App() {
         
         const uri = await captureRef(imageContainerRef.current, {
           format: 'jpg',
-          quality: 0.8,
+          quality: 0.5,
           result: 'base64',
+          width: 400,
+          height: 400,
         });
         imageToSend = uri;
+        console.log("Captured image size:", Math.round(uri.length * 3 / 4 / 1024), "KB");
       }
 
-      // 2. Transition to loading state
-      setLoading(true);
-      setEditMode(false); 
+      // Now safe to exit edit mode — capture is done
+      setEditMode(false);
 
       console.log("Sending image to Flask backend...");
       
+      // 60-second timeout so the request doesn't hang forever
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
+
       let response = await fetch('http://192.168.1.109:5000/analyze', {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           image_data: imageToSend,
           has_annotation: hasDrawing,
+          serving_size: servingSize, // NEW: send serving size to AI
         }),
       });
       
+      clearTimeout(timeoutId);
+
       if (!response.ok) {
         throw new Error(`Server returned error status: ${response.status}`);
       }
@@ -122,7 +177,11 @@ export default function App() {
       console.log("Macros pulled successfully:", data);
       setNutritionData(data);
     } catch (error) {
-      alert("Analysis failed. Check your backend and network connection!");
+      if (error.name === 'AbortError') {
+        alert("Request timed out. The server took too long to respond. Please try again.");
+      } else {
+        alert("Backend connection dropped. Ensure python app_api.py is running!");
+      }
       console.error(error);
     } finally {
       setLoading(false);
@@ -220,9 +279,16 @@ export default function App() {
       <StatusBar barStyle="light-content" />
       <Text style={styles.title}>AI Food Analyzer</Text>
       
-      <TouchableOpacity style={styles.button} onPress={pickImage}>
-        <Text style={styles.buttonText}>📸 Select Food Image</Text>
-      </TouchableOpacity>
+      <View style={styles.buttonRow}>
+        <TouchableOpacity style={styles.buttonHalf} onPress={pickImage}>
+          <Text style={styles.buttonEmoji}>🖼️</Text>
+          <Text style={styles.buttonText}>Gallery</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.buttonHalf} onPress={takePhoto}>
+          <Text style={styles.buttonEmoji}>📷</Text>
+          <Text style={styles.buttonText}>Camera</Text>
+        </TouchableOpacity>
+      </View>
 
       {image && (
         <View style={styles.resultImageSection}>
@@ -246,11 +312,43 @@ export default function App() {
           {nutritionData.description ? (
             <Text style={styles.descriptionText}>"{nutritionData.description}"</Text>
           ) : null}
+
+          {/* Serving Size Selector */}
+          <Text style={styles.servingLabel}>📏 Serving Size</Text>
+          <View style={styles.servingRow}>
+            {SERVING_OPTIONS.map((option) => (
+              <TouchableOpacity
+                key={option.label}
+                style={[
+                  styles.servingButton,
+                  servingSize === option.label && styles.servingButtonActive,
+                ]}
+                onPress={() => setServingSize(option.label)}
+              >
+                <Text style={[
+                  styles.servingButtonText,
+                  servingSize === option.label && styles.servingButtonTextActive,
+                ]}>
+                  {option.label}
+                </Text>
+                <Text style={styles.servingMultiplierText}>
+                  {option.multiplier}x
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
           <View style={styles.divider} />
-          <Text style={styles.macroText}>🔥 Calories: {nutritionData.calories ?? 0} kcal</Text>
-          <Text style={styles.macroText}>🥩 Protein: {nutritionData.protein ?? 0}g</Text>
-          <Text style={styles.macroText}>🍞 Carbs: {nutritionData.carbs ?? 0}g</Text>
-          <Text style={styles.macroText}>🥑 Fats: {nutritionData.fat ?? 0}g</Text>
+          <Text style={styles.macroText}>🔥 Calories: {getAdjustedValue(nutritionData.calories)} kcal</Text>
+          <Text style={styles.macroText}>🥩 Protein: {getAdjustedValue(nutritionData.protein)}g</Text>
+          <Text style={styles.macroText}>🍞 Carbs: {getAdjustedValue(nutritionData.carbs)}g</Text>
+          <Text style={styles.macroText}>🥑 Fats: {getAdjustedValue(nutritionData.fat)}g</Text>
+          
+          {servingSize !== 'Medium' && (
+            <Text style={styles.servingNote}>
+              Values adjusted for {servingSize.toLowerCase()} serving ({getMultiplier()}x)
+            </Text>
+          )}
         </View>
       )}
     </ScrollView>
@@ -283,6 +381,25 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     width: '90%',
     alignItems: 'center',
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '90%',
+    marginBottom: 20,
+  },
+  buttonHalf: {
+    flex: 1,
+    backgroundColor: '#1f1f1f',
+    paddingVertical: 18,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#333',
+    alignItems: 'center',
+  },
+  buttonEmoji: {
+    fontSize: 24,
+    marginBottom: 6,
   },
   buttonText: {
     color: '#fff',
@@ -353,6 +470,53 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: '#ddd',
     marginVertical: 5,
+  },
+  servingLabel: {
+    fontSize: 14,
+    color: '#888',
+    marginTop: 10,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  servingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 6,
+    marginBottom: 5,
+  },
+  servingButton: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: '#2a2a2a',
+    borderWidth: 1,
+    borderColor: '#333',
+    alignItems: 'center',
+  },
+  servingButtonActive: {
+    backgroundColor: '#00ffcc20',
+    borderColor: '#00ffcc',
+  },
+  servingButtonText: {
+    fontSize: 11,
+    color: '#888',
+    fontWeight: '600',
+  },
+  servingButtonTextActive: {
+    color: '#00ffcc',
+  },
+  servingMultiplierText: {
+    fontSize: 10,
+    color: '#555',
+    marginTop: 2,
+  },
+  servingNote: {
+    fontSize: 12,
+    color: '#666',
+    fontStyle: 'italic',
+    textAlign: 'center',
+    marginTop: 10,
   },
 
   // ========== EDITING SCREEN STYLES ==========
