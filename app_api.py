@@ -25,41 +25,65 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Prompt for the AI (no annotation)
 PROMPT = """
-Analyze this food image and provide the nutritional information. the food can also be south asian dishes.
- if there are multiple food items in the image,
- provide the nutritional information for the most prominent one.
- if food cannot be reconized return with unkown to all the fields.
- if picture is food just say example:  "[some funny line about why you cant eat this food]"
-Return ONLY a JSON object with the following keys:
-"food_name", "calories", "protein", "carbs", "fat"
+Analyze this food image and provide a professional nutritional assessment. 
+The food can also be South Asian dishes.
+If there are multiple food items, analyze the most prominent one.
 
-Example format:
-{
-  "food_name": "Chicken Salad",
-  "calories": 350,
-  "protein": 30,
-  "carbs": 10,
-  "fat": 15
-}
+Provide the following in a JSON object:
+1. "food_name": Name of the dish.
+2. "calories": Total kcal.
+3. "protein": Grams.
+4. "carbs": Grams.
+5. "fat": Grams.
+6. "health_score": A numerical score from 0-100 based on nutritional density.
+7. "health_grade": A letter grade (A+, A, B, C, D, or F).
+8. "warnings": A list of short dietary warnings.
+9. "insight": A one-sentence professional nutrition tip.
+10. "ingredients": A list of predicted main ingredients.
+11. "healthy_recipe": A JSON object with:
+    - "improvements": A short list of how to make THIS dish healthier.
+    - "steps": A 3-5 step simplified healthy recipe for this dish.
+
+Return ONLY the JSON object.
 """
 
-# Prompt for annotated images (user drew a green shape around specific food)
+# Prompt for annotated images
 ANNOTATED_PROMPT = """
-The user has drawn a bright green outline/shape on this food image to highlight a specific food item.
-Analyze ONLY the food that is inside or enclosed by the green drawn line. Ignore all other food items outside the green shape.
-The food can also be south asian dishes.
-If the food inside the green shape cannot be recognized, return with unknown to all fields.
-Return ONLY a JSON object with the following keys:
-"food_name", "calories", "protein", "carbs", "fat"
+The user has highlighted a specific food item with a green outline. Analyze ONLY the food inside that shape.
+The food can also be South Asian dishes.
 
-Example format:
-{
-  "food_name": "Chicken Salad",
-  "calories": 350,
-  "protein": 30,
-  "carbs": 10,
-  "fat": 15
-}
+Provide the following in a JSON object:
+1. "food_name": Name of the dish.
+2. "calories": Total kcal.
+3. "protein": Grams.
+4. "carbs": Grams.
+5. "fat": Grams.
+6. "health_score": A numerical score from 0-100 based on nutritional density.
+7. "health_grade": A letter grade (A+, A, B, C, D, or F).
+8. "warnings": A list of short dietary warnings.
+9. "insight": A one-sentence professional nutrition tip.
+10. "ingredients": A list of predicted main ingredients.
+11. "healthy_recipe": A JSON object with:
+    - "improvements": A short list of how to make THIS dish healthier.
+    - "steps": A 3-5 step simplified healthy recipe for this dish.
+
+Return ONLY the JSON object.
+"""
+
+# Prompt for Menu X-Ray
+MENU_PROMPT = """
+Analyze this restaurant menu image. Identify the main dishes and categorize them into a "Traffic Light" health system.
+The menu might contain South Asian or international dishes.
+
+Provide the results in a JSON array of objects, where each object has:
+1. "item_name": Name of the dish.
+2. "category": "Green" (Healthy/Nutritious), "Yellow" (Moderate/Occasional), or "Red" (Unhealthy/Treat).
+3. "reason": A short explanation of why it fits this category.
+4. "estimated_calories": A rough estimate (e.g., "300-400").
+5. "health_tip": A short tip (e.g., "Ask for less oil", "Great protein source").
+
+Focus on the 5-8 most prominent items on the menu.
+Return ONLY the JSON array.
 """
 
 @app.route('/analyze', methods=['POST'])
@@ -154,6 +178,84 @@ def analyze():
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "ok"})
+
+@app.route('/recommendations', methods=['POST'])
+def recommendations():
+    try:
+        data = request.json
+        daily_totals = data.get('daily_totals', {"calories": 0, "protein": 0, "carbs": 0, "fat": 0})
+        
+        prompt = f"""
+        Based on these daily nutritional totals: {daily_totals}.
+        Suggest 3 healthy South Asian (Indian, Pakistani, Bengali, etc.) dishes that would balance this diet.
+        For example, if protein is low, suggest a high-protein dish like Tandoori Chicken or Dal.
+        
+        Return ONLY a JSON array of 3 objects with these keys:
+        "name", "reason" (why this helps), "calories", "protein", "carbs", "fat", "image_query" (a simple 2-word English name for the dish for image searching).
+
+        Example:
+        [
+          {{"name": "Chana Masala", "reason": "High in plant-based protein and fiber.", "calories": 250, "protein": 12, "carbs": 35, "fat": 8, "image_query": "chana masala"}}
+        ]
+        """
+        
+        response = client.models.generate_content(
+            model="gemini-flash-lite-latest",
+            contents=[prompt]
+        )
+        
+        raw_text = response.text.strip()
+        json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
+        
+        if json_match:
+            suggestions = json.loads(json_match.group())
+            return jsonify(suggestions)
+        else:
+            return jsonify([])
+
+    except Exception as e:
+        print(f"Error in recommendations: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/analyze_menu', methods=['POST'])
+def analyze_menu():
+    try:
+        data = request.json
+        if not data or 'image_data' not in data:
+            return jsonify({"error": "No image data provided"}), 400
+
+        image_data = data['image_data']
+        if image_data.startswith('data:'):
+            image_data = image_data.split(',', 1)[1]
+        
+        image_bytes = base64.b64decode(image_data)
+        
+        print(f"Sending menu image to Gemini for analysis...")
+        
+        response = client.models.generate_content(
+            model="gemini-flash-lite-latest",
+            contents=[
+                MENU_PROMPT,
+                types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type="image/jpeg"
+                )
+            ],
+            config=types.GenerateContentConfig(temperature=0)
+        )
+        
+        raw_text = response.text.strip()
+        json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
+        
+        if json_match:
+            menu_data = json.loads(json_match.group())
+            return jsonify(menu_data)
+        else:
+            return jsonify([])
+
+    except Exception as e:
+        print(f"Error in menu analysis: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     print("AI Backend (Gemini 1.5 Flash) running on http://0.0.0.0:5000")

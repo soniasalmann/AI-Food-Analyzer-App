@@ -1,8 +1,13 @@
-import React, { useState, useRef } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, Image, ActivityIndicator, ScrollView, PanResponder, Dimensions, StatusBar } from 'react-native';
+import React, { useState, useRef, useEffect } from 'react';
+import { StyleSheet, Text, View, TouchableOpacity, Image, ActivityIndicator, ScrollView, PanResponder, Dimensions, StatusBar, Animated, Easing, Alert } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import Svg, { Polyline } from 'react-native-svg';
 import { captureRef } from 'react-native-view-shot';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system';
+import { ANALYZE_ENDPOINT, RECOMMENDATIONS_ENDPOINT, MENU_ENDPOINT } from './config';
+import * as HistoryService from './historyService';
+import { HealthRings } from './components/HealthRings';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const IMAGE_SIZE = SCREEN_WIDTH - 40; // Nearly full width with some padding
@@ -14,9 +19,160 @@ export default function App() {
   const [nutritionData, setNutritionData] = useState(null);
   const [paths, setPaths] = useState([]);
   const [currentPath, setCurrentPath] = useState([]);
-  const [editMode, setEditMode] = useState(false); // true = show the editing/drawing screen
-  const [servingSize, setServingSize] = useState('Medium'); // Serving size selector
+  const [editMode, setEditMode] = useState(false);
+  const [servingSize, setServingSize] = useState('Medium');
+  const [history, setHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [recommendations, setRecommendations] = useState([]);
+  const [showRecipe, setShowRecipe] = useState(false);
+  const [menuResults, setMenuResults] = useState(null);
+  const [showMenuAnalysis, setShowMenuAnalysis] = useState(false);
   const imageContainerRef = useRef(null);
+  const resultCardRef = useRef(null);
+  const scanAnim = useRef(new Animated.Value(0)).current;
+
+  // ... (previous effects)
+
+  const pickMenuImage = async () => {
+    let result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: false,
+      quality: 0.8,
+      base64: true,
+    });
+
+    if (!result.canceled) {
+      analyzeMenu(result.assets[0].base64);
+    }
+  };
+
+  const analyzeMenu = async (base64) => {
+    setLoading(true);
+    try {
+      let response = await fetch(MENU_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_data: base64 }),
+      });
+      let data = await response.json();
+      setMenuResults(data);
+      setShowMenuAnalysis(true);
+    } catch (error) {
+      Alert.alert("Analysis Failed", "Could not read menu.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  useEffect(() => {
+    fetchRecommendations();
+  }, [history]);
+
+  const loadHistory = async () => {
+    const data = await HistoryService.getHistory();
+    setHistory(data);
+  };
+
+  const fetchRecommendations = async () => {
+    try {
+      const dailyTotals = getDailyTotals();
+      const response = await fetch(RECOMMENDATIONS_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ daily_totals: dailyTotals }),
+      });
+      const data = await response.json();
+      setRecommendations(data);
+    } catch (error) {
+      console.error("Failed to fetch recommendations:", error);
+    }
+  };
+
+  const shareSnapshot = async () => {
+    if (!resultCardRef.current) return;
+    
+    try {
+      setLoading(true);
+      const uri = await captureRef(resultCardRef.current, {
+        format: 'png',
+        quality: 0.9,
+      });
+      
+      await Sharing.shareAsync(uri, {
+        mimeType: 'image/png',
+        dialogTitle: 'Share your Nutrition Report',
+        UTI: 'public.png',
+      });
+    } catch (error) {
+      Alert.alert("Sharing Failed", "Could not generate report card.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Animation for scanning line
+  useEffect(() => {
+    if (loading) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(scanAnim, {
+            toValue: 1,
+            duration: 2000,
+            easing: Easing.linear,
+            useNativeDriver: true,
+          }),
+          Animated.timing(scanAnim, {
+            toValue: 0,
+            duration: 2000,
+            easing: Easing.linear,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    } else {
+      scanAnim.stopAnimation();
+      scanAnim.setValue(0);
+    }
+  }, [loading]);
+
+  const getDailyTotals = () => {
+    const today = new Date().toLocaleDateString();
+    const todaysHistory = history.filter(item => new Date(item.timestamp).toLocaleDateString() === today);
+    
+    return todaysHistory.reduce((acc, item) => ({
+      calories: acc.calories + (item.calories || 0),
+      protein: acc.protein + (item.protein || 0),
+      carbs: acc.carbs + (item.carbs || 0),
+      fat: acc.fat + (item.fat || 0),
+    }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+  };
+
+  const ScanningLine = () => (
+    <Animated.View
+      style={[
+        styles.scanLine,
+        {
+          transform: [{
+            translateY: scanAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, IMAGE_SIZE],
+            })
+          }]
+        }
+      ]}
+    />
+  );
+
+  const getTrafficColor = (category) => {
+    if (category === 'Green') return '#00ff66';
+    if (category === 'Yellow') return '#ffcc00';
+    if (category === 'Red') return '#ff4444';
+    return '#888';
+  };
 
   // Serving size multipliers
   const SERVING_OPTIONS = [
@@ -25,7 +181,6 @@ export default function App() {
     { label: 'Large', multiplier: 1.5, emoji: '🍽️🍽️🍽️' },
     { label: 'Extra Large', multiplier: 2.0, emoji: '🍽️🍽️🍽️🍽️' },
   ];
-
   const getMultiplier = () => {
     const option = SERVING_OPTIONS.find(o => o.label === servingSize);
     return option ? option.multiplier : 1.0;
@@ -154,7 +309,7 @@ export default function App() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000);
 
-      let response = await fetch('http://192.168.1.109:5000/analyze', {
+      let response = await fetch(ANALYZE_ENDPOINT, {
         method: 'POST',
         signal: controller.signal,
         headers: {
@@ -176,6 +331,10 @@ export default function App() {
       let data = await response.json();
       console.log("Macros pulled successfully:", data);
       setNutritionData(data);
+      
+      // Save to local history
+      const updatedHistory = await HistoryService.saveToHistory(data);
+      if (updatedHistory) setHistory(updatedHistory);
     } catch (error) {
       if (error.name === 'AbortError') {
         alert("Request timed out. The server took too long to respond. Please try again.");
@@ -273,11 +432,121 @@ export default function App() {
     );
   }
 
+  // ========== HISTORY SCREEN ==========
+  if (showHistory) {
+    return (
+      <View style={styles.historyScreen}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.editTopBar}>
+          <TouchableOpacity onPress={() => setShowHistory(false)}>
+            <Text style={styles.editTopButtonText}>✕ Close</Text>
+          </TouchableOpacity>
+          <Text style={styles.editTitle}>Scan History</Text>
+          <TouchableOpacity onPress={() => {
+            Alert.alert(
+              "Clear History",
+              "Are you sure you want to delete all scans?",
+              [
+                { text: "Cancel", style: "cancel" },
+                { 
+                  text: "Clear All", 
+                  style: "destructive",
+                  onPress: async () => {
+                    await HistoryService.clearHistory();
+                    setHistory([]);
+                  }
+                }
+              ]
+            );
+          }}>
+            <Text style={[styles.editTopButtonText, { color: '#ff4444' }]}>🗑️ Clear</Text>
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView contentContainerStyle={styles.historyList}>
+          {history.length === 0 ? (
+            <Text style={styles.emptyHistoryText}>No scans yet. Try analyzing some food!</Text>
+          ) : (
+            history.map((item) => (
+              <View key={item.id} style={styles.historyCard}>
+                <View style={styles.historyHeader}>
+                  <Text style={styles.historyFoodName}>{item.food_name}</Text>
+                  <Text style={styles.historyDate}>
+                    {new Date(item.timestamp).toLocaleDateString()}
+                  </Text>
+                </View>
+                <View style={styles.historyMacros}>
+                  <Text style={styles.historyMacroItem}>🔥 {item.calories} kcal</Text>
+                  <Text style={styles.historyMacroItem}>🥩 {item.protein}g</Text>
+                  <Text style={styles.historyMacroItem}>🍞 {item.carbs}g</Text>
+                  <Text style={styles.historyMacroItem}>🥑 {item.fat}g</Text>
+                </View>
+                <TouchableOpacity 
+                  style={styles.deleteEntryButton}
+                  onPress={async () => {
+                    const updated = await HistoryService.deleteHistoryEntry(item.id);
+                    if (updated) setHistory(updated);
+                  }}
+                >
+                  <Text style={styles.deleteEntryText}>Remove</Text>
+                </TouchableOpacity>
+              </View>
+            ))
+          )}
+        </ScrollView>
+      </View>
+    );
+  }
+
   // ========== MAIN SCREEN (home + results) ==========
+  const dailyTotals = getDailyTotals();
+
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <StatusBar barStyle="light-content" />
-      <Text style={styles.title}>AI Food Analyzer</Text>
+      
+      <View style={styles.mainTopBar}>
+        <View>
+          <Text style={styles.dashboardGreeting}>Hello, User! 👋</Text>
+          <Text style={styles.dashboardSub}>Track your daily goals</Text>
+        </View>
+        <TouchableOpacity style={styles.historyHeaderButton} onPress={() => setShowHistory(true)}>
+          <Text style={styles.historyButtonText}>📜 History</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Daily Progress Dashboard */}
+      {!nutritionData && !loading && (
+        <View style={styles.dashboardCard}>
+          <Text style={styles.dashboardTitle}>Daily Progress</Text>
+          <HealthRings data={dailyTotals} />
+        </View>
+      )}
+
+      {/* Recommended Meals Section */}
+      {!nutritionData && !loading && recommendations.length > 0 && (
+        <View style={styles.recommendationSection}>
+          <Text style={styles.dashboardTitle}>💡 Recommended South Asian Meals</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recommendationScroll}>
+            {recommendations.map((meal, index) => (
+              <View key={index} style={styles.mealCard}>
+                <Image 
+                  source={{ uri: `https://source.unsplash.com/400x300/?${meal.image_query},food` }} 
+                  style={styles.mealImage} 
+                />
+                <View style={styles.mealInfo}>
+                  <Text style={styles.mealName}>{meal.name}</Text>
+                  <Text style={styles.mealReason}>{meal.reason}</Text>
+                  <View style={styles.mealMacros}>
+                    <Text style={styles.mealMacroText}>🔥 {meal.calories} kcal</Text>
+                    <Text style={styles.mealMacroText}>🥩 {meal.protein}g P</Text>
+                  </View>
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      )}
       
       <View style={styles.buttonRow}>
         <TouchableOpacity style={styles.buttonHalf} onPress={pickImage}>
@@ -290,65 +559,150 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {image && (
-        <View style={styles.resultImageSection}>
-          <Image source={{ uri: image }} style={styles.resultImage} />
-          <TouchableOpacity style={styles.retakeButton} onPress={pickImage}>
-            <Text style={styles.retakeButtonText}>📷 Pick Another</Text>
-          </TouchableOpacity>
+      <TouchableOpacity style={styles.menuScanButton} onPress={pickMenuImage}>
+        <Text style={styles.menuScanEmoji}>📜</Text>
+        <View>
+          <Text style={styles.menuScanText}>Menu X-Ray Scan</Text>
+          <Text style={styles.menuScanSub}>Get health recommendations from any menu</Text>
+        </View>
+      </TouchableOpacity>
+
+      {/* Menu Analysis Overlay */}
+      {showMenuAnalysis && menuResults && (
+        <View style={styles.menuAnalysisOverlay}>
+          <View style={styles.editTopBar}>
+            <TouchableOpacity onPress={() => setShowMenuAnalysis(false)}>
+              <Text style={styles.editTopButtonText}>✕ Close</Text>
+            </TouchableOpacity>
+            <Text style={styles.editTitle}>Menu X-Ray Results</Text>
+            <View style={{ width: 50 }} />
+          </View>
+          
+          <ScrollView contentContainerStyle={styles.menuAnalysisList}>
+            <Text style={styles.menuHint}>Traffic Light System: Pick Green for the healthiest options!</Text>
+            {menuResults.map((item, index) => (
+              <View key={index} style={[styles.menuItemCard, { borderLeftColor: getTrafficColor(item.category) }]}>
+                <View style={styles.menuItemHeader}>
+                  <Text style={styles.menuItemName}>{item.item_name}</Text>
+                  <View style={[styles.trafficLight, { backgroundColor: getTrafficColor(item.category) }]}>
+                    <Text style={styles.trafficText}>{item.category}</Text>
+                  </View>
+                </View>
+                <Text style={styles.menuItemReason}>{item.reason}</Text>
+                <View style={styles.menuItemFooter}>
+                  <Text style={styles.menuItemCal}>🔥 {item.estimated_calories} kcal</Text>
+                  <Text style={styles.menuItemTip}>💡 {item.health_tip}</Text>
+                </View>
+              </View>
+            ))}
+          </ScrollView>
         </View>
       )}
 
       {loading && (
         <View style={styles.loadingSection}>
-          <ActivityIndicator size="large" color="#00ffcc" />
-          <Text style={styles.loadingText}>Analyzing your food...</Text>
+          <View style={styles.scanContainer}>
+            <Image source={{ uri: image }} style={styles.scanImage} />
+            <ScanningLine />
+          </View>
+          <Text style={styles.loadingText}>AI is scanning your food...</Text>
         </View>
       )}
 
       {nutritionData && (
-        <View style={styles.card}>
-          <Text style={styles.foodName}>{nutritionData.food_name || "Analysis Result"}</Text>
-          {nutritionData.description ? (
-            <Text style={styles.descriptionText}>"{nutritionData.description}"</Text>
+        <View style={styles.card} ref={resultCardRef} collapsable={false}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.foodName}>{nutritionData.food_name}</Text>
+            <View style={styles.headerActions}>
+              <TouchableOpacity onPress={shareSnapshot} style={styles.iconButton}>
+                <Text style={styles.shareIcon}>📤</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => { setNutritionData(null); setShowRecipe(false); }}>
+                <Text style={styles.closeCard}>✕</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+          
+          <HealthRings data={nutritionData} />
+
+          {/* Deep Ingredients Section */}
+          {nutritionData.ingredients && (
+            <View style={styles.ingredientSection}>
+              <Text style={styles.sectionLabel}>🔍 Predicted Ingredients</Text>
+              <View style={styles.ingredientTags}>
+                {nutritionData.ingredients.map((ing, i) => (
+                  <View key={i} style={styles.ingTag}>
+                    <Text style={styles.ingText}>{ing}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          )}
+
+          {/* Healthy Chef Toggle */}
+          <TouchableOpacity 
+            style={[styles.chefToggle, showRecipe && styles.chefToggleActive]}
+            onPress={() => setShowRecipe(!showRecipe)}
+          >
+            <Text style={styles.chefToggleText}>
+              {showRecipe ? '📖 Hide Healthy Recipe' : '👨‍🍳 AI Healthy Chef Mode'}
+            </Text>
+          </TouchableOpacity>
+
+          {showRecipe && nutritionData.healthy_recipe && (
+            <Animated.View style={styles.recipeBox}>
+              <Text style={styles.recipeTitle}>✨ How to improve this dish:</Text>
+              {nutritionData.healthy_recipe.improvements.map((imp, i) => (
+                <Text key={i} style={styles.recipeBullet}>• {imp}</Text>
+              ))}
+              
+              <Text style={[styles.recipeTitle, { marginTop: 15 }]}>🍳 Quick Healthy Steps:</Text>
+              {nutritionData.healthy_recipe.steps.map((step, i) => (
+                <Text key={i} style={styles.recipeStep}>{i+1}. {step}</Text>
+              ))}
+            </Animated.View>
+          )}
+
+          {!showRecipe && nutritionData.insight ? (
+            <View style={styles.insightBox}>
+              <Text style={styles.insightTitle}>💡 AI Insight</Text>
+              <Text style={styles.insightText}>{nutritionData.insight}</Text>
+            </View>
           ) : null}
 
-          {/* Serving Size Selector */}
-          <Text style={styles.servingLabel}>📏 Serving Size</Text>
-          <View style={styles.servingRow}>
-            {SERVING_OPTIONS.map((option) => (
-              <TouchableOpacity
-                key={option.label}
-                style={[
-                  styles.servingButton,
-                  servingSize === option.label && styles.servingButtonActive,
-                ]}
-                onPress={() => setServingSize(option.label)}
-              >
-                <Text style={[
-                  styles.servingButtonText,
-                  servingSize === option.label && styles.servingButtonTextActive,
-                ]}>
-                  {option.label}
-                </Text>
-                <Text style={styles.servingMultiplierText}>
-                  {option.multiplier}x
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <View style={styles.divider} />
-          <Text style={styles.macroText}>🔥 Calories: {getAdjustedValue(nutritionData.calories)} kcal</Text>
-          <Text style={styles.macroText}>🥩 Protein: {getAdjustedValue(nutritionData.protein)}g</Text>
-          <Text style={styles.macroText}>🍞 Carbs: {getAdjustedValue(nutritionData.carbs)}g</Text>
-          <Text style={styles.macroText}>🥑 Fats: {getAdjustedValue(nutritionData.fat)}g</Text>
-          
-          {servingSize !== 'Medium' && (
-            <Text style={styles.servingNote}>
-              Values adjusted for {servingSize.toLowerCase()} serving ({getMultiplier()}x)
-            </Text>
+          {nutritionData.warnings && nutritionData.warnings.length > 0 && (
+            <View style={styles.warningBox}>
+              {nutritionData.warnings.map((w, i) => (
+                <View key={i} style={styles.warningTag}>
+                  <Text style={styles.warningText}>⚠️ {w}</Text>
+                </View>
+              ))}
+            </View>
           )}
+
+          {/* Serving Size Selector */}
+          <View style={styles.servingSection}>
+            <Text style={styles.servingLabel}>📏 Adjust Serving Size</Text>
+            <View style={styles.servingRow}>
+              {SERVING_OPTIONS.map((option) => (
+                <TouchableOpacity
+                  key={option.label}
+                  style={[
+                    styles.servingButton,
+                    servingSize === option.label && styles.servingButtonActive,
+                  ]}
+                  onPress={() => setServingSize(option.label)}
+                >
+                  <Text style={[
+                    styles.servingButtonText,
+                    servingSize === option.label && styles.servingButtonTextActive,
+                  ]}>
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
         </View>
       )}
     </ScrollView>
@@ -359,164 +713,276 @@ const styles = StyleSheet.create({
   // ========== MAIN SCREEN STYLES ==========
   container: {
     flexGrow: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#0a0a0a',
     alignItems: 'center',
-    justifyContent: 'center',
     padding: 20,
+    paddingTop: 60,
+  },
+  dashboardGreeting: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: 'bold',
+  },
+  dashboardSub: {
+    color: '#666',
+    fontSize: 14,
+  },
+  dashboardCard: {
+    backgroundColor: '#111',
+    borderRadius: 20,
+    padding: 20,
+    width: '100%',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#222',
+  },
+  dashboardTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 10,
   },
   title: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: 'bold',
     color: '#fff',
-    marginBottom: 30,
-    marginTop: 40,
-  },
-  button: {
-    backgroundColor: '#1f1f1f',
-    paddingVertical: 15,
-    paddingHorizontal: 30,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#333',
-    marginBottom: 20,
-    width: '90%',
-    alignItems: 'center',
   },
   buttonRow: {
     flexDirection: 'row',
     gap: 12,
-    width: '90%',
+    width: '100%',
     marginBottom: 20,
   },
   buttonHalf: {
     flex: 1,
-    backgroundColor: '#1f1f1f',
-    paddingVertical: 18,
-    borderRadius: 12,
+    backgroundColor: '#1a1a1a',
+    paddingVertical: 20,
+    borderRadius: 15,
     borderWidth: 1,
     borderColor: '#333',
     alignItems: 'center',
   },
   buttonEmoji: {
-    fontSize: 24,
-    marginBottom: 6,
+    fontSize: 28,
+    marginBottom: 8,
   },
   buttonText: {
     color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  scanContainer: {
+    width: IMAGE_SIZE,
+    height: IMAGE_SIZE,
+    borderRadius: 20,
+    overflow: 'hidden',
+    position: 'relative',
+    borderWidth: 2,
+    borderColor: '#00ffcc',
+  },
+  scanImage: {
+    width: '100%',
+    height: '100%',
+    opacity: 0.6,
+  },
+  scanLine: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: '#00ffcc',
+    shadowColor: '#00ffcc',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 10,
+    elevation: 10,
   },
   resultImageSection: {
     alignItems: 'center',
     marginVertical: 10,
+    width: '100%',
   },
   resultImage: {
-    width: 200,
-    height: 200,
-    borderRadius: 15,
+    width: IMAGE_SIZE,
+    height: IMAGE_SIZE,
+    borderRadius: 20,
   },
   retakeButton: {
-    marginTop: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    backgroundColor: '#1f1f1f',
-    borderRadius: 8,
+    marginTop: 15,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#333',
   },
   retakeButtonText: {
-    color: '#aaa',
-    fontSize: 13,
+    color: '#888',
+    fontSize: 14,
   },
   loadingSection: {
-    marginTop: 20,
+    marginTop: 10,
     alignItems: 'center',
   },
   loadingText: {
-    color: '#888',
-    marginTop: 10,
-    fontSize: 14,
+    color: '#00ffcc',
+    marginTop: 20,
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: 1,
   },
   card: {
-    backgroundColor: '#1e1e1e',
-    borderRadius: 15,
+    backgroundColor: '#111',
+    borderRadius: 25,
     padding: 20,
-    width: '90%',
+    width: '100%',
     borderWidth: 1,
-    borderColor: '#333',
-    marginTop: 20,
+    borderColor: '#222',
+    marginTop: 10,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 15,
   },
   foodName: {
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: 'bold',
+    color: '#fff',
+  },
+  closeCard: {
+    color: '#666',
+    fontSize: 20,
+    padding: 5,
+  },
+  insightBox: {
+    backgroundColor: '#1a1a1a',
+    padding: 15,
+    borderRadius: 12,
+    marginTop: 10,
+    borderLeftWidth: 4,
+    borderLeftColor: '#00ffcc',
+  },
+  insightTitle: {
     color: '#00ffcc',
+    fontSize: 12,
+    fontWeight: 'bold',
     marginBottom: 5,
-    textAlign: 'center',
+    textTransform: 'uppercase',
   },
-  descriptionText: {
-    fontSize: 16,
-    fontStyle: 'italic',
-    color: '#aaa',
-    textAlign: 'center',
-    marginBottom: 10,
-    paddingHorizontal: 10,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#333',
-    marginVertical: 10,
-  },
-  macroText: {
-    fontSize: 18,
+  insightText: {
     color: '#ddd',
-    marginVertical: 5,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  warningBox: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 15,
+  },
+  warningTag: {
+    backgroundColor: '#ff444420',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ff444440',
+  },
+  warningText: {
+    color: '#ff4444',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  servingSection: {
+    marginTop: 20,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#222',
   },
   servingLabel: {
-    fontSize: 14,
-    color: '#888',
-    marginTop: 10,
-    marginBottom: 8,
+    fontSize: 12,
+    color: '#666',
+    marginBottom: 10,
+    textTransform: 'uppercase',
     textAlign: 'center',
   },
   servingRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    gap: 6,
-    marginBottom: 5,
+    gap: 8,
   },
   servingButton: {
     flex: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    borderRadius: 8,
-    backgroundColor: '#2a2a2a',
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: '#1a1a1a',
     borderWidth: 1,
     borderColor: '#333',
     alignItems: 'center',
   },
   servingButtonActive: {
-    backgroundColor: '#00ffcc20',
+    backgroundColor: '#00ffcc10',
     borderColor: '#00ffcc',
   },
   servingButtonText: {
     fontSize: 11,
-    color: '#888',
-    fontWeight: '600',
+    color: '#666',
+    fontWeight: 'bold',
   },
   servingButtonTextActive: {
     color: '#00ffcc',
   },
-  servingMultiplierText: {
-    fontSize: 10,
-    color: '#555',
-    marginTop: 2,
+
+  // ========== RECOMMENDATION STYLES ==========
+  recommendationSection: {
+    width: '100%',
+    marginBottom: 25,
   },
-  servingNote: {
-    fontSize: 12,
-    color: '#666',
-    fontStyle: 'italic',
-    textAlign: 'center',
-    marginTop: 10,
+  recommendationScroll: {
+    paddingLeft: 0,
+    gap: 15,
+  },
+  mealCard: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 15,
+    width: 220,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  mealImage: {
+    width: '100%',
+    height: 120,
+  },
+  mealInfo: {
+    padding: 12,
+  },
+  mealName: {
+    color: '#00ffcc',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  mealReason: {
+    color: '#888',
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 10,
+    height: 32,
+  },
+  mealMacros: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    borderTopWidth: 1,
+    borderTopColor: '#222',
+    paddingTop: 8,
+  },
+  mealMacroText: {
+    color: '#ccc',
+    fontSize: 11,
+    fontWeight: '600',
   },
 
   // ========== EDITING SCREEN STYLES ==========
@@ -600,5 +1066,290 @@ const styles = StyleSheet.create({
     color: '#121212',
     fontSize: 14,
     fontWeight: 'bold',
+  },
+
+  // ========== HISTORY SCREEN STYLES ==========
+  historyScreen: {
+    flex: 1,
+    backgroundColor: '#0a0a0a',
+    paddingTop: 50,
+  },
+  historyList: {
+    padding: 20,
+    alignItems: 'center',
+  },
+  historyCard: {
+    backgroundColor: '#1e1e1e',
+    borderRadius: 12,
+    padding: 15,
+    width: '100%',
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  historyHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  historyFoodName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#00ffcc',
+    flex: 1,
+  },
+  historyDate: {
+    fontSize: 12,
+    color: '#666',
+  },
+  historyMacros: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: '#121212',
+    padding: 10,
+    borderRadius: 8,
+  },
+  historyMacroItem: {
+    fontSize: 12,
+    color: '#ccc',
+  },
+  emptyHistoryText: {
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 50,
+    fontSize: 16,
+    fontStyle: 'italic',
+  },
+  deleteEntryButton: {
+    marginTop: 10,
+    alignSelf: 'flex-end',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+  },
+  deleteEntryText: {
+    color: '#ff4444',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  mainTopBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '90%',
+    marginBottom: 20,
+    marginTop: 40,
+  },
+  historyHeaderButton: {
+    backgroundColor: '#1f1f1f',
+    paddingVertical: 8,
+    paddingHorizontal: 15,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  historyButtonText: {
+    color: '#00ffcc',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+
+  // ========== NEW RESULT CARD STYLES ==========
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 15,
+  },
+  iconButton: {
+    padding: 5,
+  },
+  shareIcon: {
+    fontSize: 20,
+  },
+  ingredientSection: {
+    marginTop: 20,
+    backgroundColor: '#1a1a1a',
+    padding: 15,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  sectionLabel: {
+    color: '#888',
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 10,
+  },
+  ingredientTags: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  ingTag: {
+    backgroundColor: '#222',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+  },
+  ingText: {
+    color: '#fff',
+    fontSize: 12,
+  },
+  chefToggle: {
+    marginTop: 15,
+    backgroundColor: '#00ffcc20',
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#00ffcc50',
+    alignItems: 'center',
+  },
+  chefToggleActive: {
+    backgroundColor: '#00ffcc',
+    borderColor: '#00ffcc',
+  },
+  chefToggleText: {
+    color: '#00ffcc',
+    fontWeight: 'bold',
+    fontSize: 13,
+  },
+  recipeBox: {
+    marginTop: 15,
+    backgroundColor: '#1a1a1a',
+    padding: 20,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  recipeTitle: {
+    color: '#00ffcc',
+    fontSize: 14,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+  recipeBullet: {
+    color: '#ccc',
+    fontSize: 13,
+    marginBottom: 4,
+    lineHeight: 18,
+  },
+  recipeStep: {
+    color: '#fff',
+    fontSize: 13,
+    marginBottom: 6,
+    lineHeight: 20,
+  },
+
+  // ========== MENU X-RAY STYLES ==========
+  menuScanButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    width: '100%',
+    padding: 15,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: '#333',
+    marginBottom: 20,
+    gap: 15,
+  },
+  menuScanEmoji: {
+    fontSize: 32,
+  },
+  menuScanText: {
+    color: '#00ffcc',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  menuScanSub: {
+    color: '#666',
+    fontSize: 11,
+  },
+  menuAnalysisOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0a0a0a',
+    paddingTop: 50,
+    zIndex: 1000,
+  },
+  menuAnalysisList: {
+    padding: 20,
+  },
+  menuHint: {
+    color: '#888',
+    fontStyle: 'italic',
+    fontSize: 12,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  menuItemCard: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    padding: 15,
+    marginBottom: 15,
+    borderLeftWidth: 5,
+    width: '100%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  menuItemHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 10,
+    gap: 10,
+  },
+  menuItemName: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+    flex: 1,
+    flexWrap: 'wrap',
+  },
+  trafficLight: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 20,
+    minWidth: 60,
+    alignItems: 'center',
+  },
+  trafficText: {
+    color: '#000',
+    fontSize: 10,
+    fontWeight: 'bold',
+    textTransform: 'uppercase',
+  },
+  menuItemReason: {
+    color: '#ccc',
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 12,
+    flexWrap: 'wrap',
+  },
+  menuItemFooter: {
+    borderTopWidth: 1,
+    borderTopColor: '#222',
+    paddingTop: 10,
+    gap: 5,
+  },
+  menuItemCal: {
+    color: '#888',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  menuItemTip: {
+    color: '#00ffcc',
+    fontSize: 12,
+    fontStyle: 'italic',
+    lineHeight: 16,
+    flexWrap: 'wrap',
   },
 });
