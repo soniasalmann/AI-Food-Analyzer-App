@@ -9,6 +9,13 @@ import { ANALYZE_ENDPOINT, RECOMMENDATIONS_ENDPOINT, MENU_ENDPOINT } from './con
 import * as HistoryService from './historyService';
 import { HealthRings } from './components/HealthRings';
 
+// Mapping for local recommendation images
+const LOCAL_FOOD_IMAGES = {
+  'dal tadka': require('./assets/Dal-tadka.jpg'),
+  'palak paneer': require('./assets/palak-paneer.jpg'),
+  'tandoori chicken': require('./assets/tandoori-chicken.jpg'),
+};
+
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const IMAGE_SIZE = SCREEN_WIDTH - 40; // Nearly full width with some padding
 
@@ -20,7 +27,6 @@ export default function App() {
   const [paths, setPaths] = useState([]);
   const [currentPath, setCurrentPath] = useState([]);
   const [editMode, setEditMode] = useState(false);
-  const [servingSize, setServingSize] = useState('Medium');
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
   const [recommendations, setRecommendations] = useState([]);
@@ -174,23 +180,6 @@ export default function App() {
     return '#888';
   };
 
-  // Serving size multipliers
-  const SERVING_OPTIONS = [
-    { label: 'Small', multiplier: 0.5, emoji: '🍽️' },
-    { label: 'Medium', multiplier: 1.0, emoji: '🍽️🍽️' },
-    { label: 'Large', multiplier: 1.5, emoji: '🍽️🍽️🍽️' },
-    { label: 'Extra Large', multiplier: 2.0, emoji: '🍽️🍽️🍽️🍽️' },
-  ];
-  const getMultiplier = () => {
-    const option = SERVING_OPTIONS.find(o => o.label === servingSize);
-    return option ? option.multiplier : 1.0;
-  };
-
-  const getAdjustedValue = (value) => {
-    if (value === undefined || value === null) return 0;
-    return Math.round(Number(value) * getMultiplier());
-  };
-
   // PanResponder handles finger drawing on the image
   const panResponder = useRef(
     PanResponder.create({
@@ -230,7 +219,6 @@ export default function App() {
       setNutritionData(null);
       setPaths([]);
       setCurrentPath([]);
-      setServingSize('Medium');
       setEditMode(true);
     }
   };
@@ -253,7 +241,6 @@ export default function App() {
       setNutritionData(null);
       setPaths([]);
       setCurrentPath([]);
-      setServingSize('Medium');
       setEditMode(true);
     }
   };
@@ -318,7 +305,6 @@ export default function App() {
         body: JSON.stringify({
           image_data: imageToSend,
           has_annotation: hasDrawing,
-          serving_size: servingSize, // NEW: send serving size to AI
         }),
       });
       
@@ -528,22 +514,30 @@ export default function App() {
         <View style={styles.recommendationSection}>
           <Text style={styles.dashboardTitle}>💡 Recommended South Asian Meals</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recommendationScroll}>
-            {recommendations.map((meal, index) => (
-              <View key={index} style={styles.mealCard}>
-                <Image 
-                  source={{ uri: `https://source.unsplash.com/400x300/?${meal.image_query},food` }} 
-                  style={styles.mealImage} 
-                />
-                <View style={styles.mealInfo}>
-                  <Text style={styles.mealName}>{meal.name}</Text>
-                  <Text style={styles.mealReason}>{meal.reason}</Text>
-                  <View style={styles.mealMacros}>
-                    <Text style={styles.mealMacroText}>🔥 {meal.calories} kcal</Text>
-                    <Text style={styles.mealMacroText}>🥩 {meal.protein}g P</Text>
+            {recommendations.map((meal, index) => {
+              const mealNameLower = meal.name.toLowerCase();
+              const localImage = LOCAL_FOOD_IMAGES[mealNameLower];
+              
+              return (
+                <View key={index} style={styles.mealCard}>
+                  <Image 
+                    source={localImage || { 
+                      uri: `https://loremflickr.com/400/300/food,southasian,${(meal.image_query || meal.name).replace(/[^a-zA-Z0-9]+/g, ',')}` 
+                    }} 
+                    style={styles.mealImage} 
+                    defaultSource={require('./assets/icon.png')}
+                  />
+                  <View style={styles.mealInfo}>
+                    <Text style={styles.mealName}>{meal.name}</Text>
+                    <Text style={styles.mealReason}>{meal.reason}</Text>
+                    <View style={styles.mealMacros}>
+                      <Text style={styles.mealMacroText}>🔥 {meal.calories} kcal</Text>
+                      <Text style={styles.mealMacroText}>🥩 {meal.protein}g P</Text>
+                    </View>
                   </View>
                 </View>
-              </View>
-            ))}
+              );
+            })}
           </ScrollView>
         </View>
       )}
@@ -679,30 +673,6 @@ export default function App() {
               ))}
             </View>
           )}
-
-          {/* Serving Size Selector */}
-          <View style={styles.servingSection}>
-            <Text style={styles.servingLabel}>📏 Adjust Serving Size</Text>
-            <View style={styles.servingRow}>
-              {SERVING_OPTIONS.map((option) => (
-                <TouchableOpacity
-                  key={option.label}
-                  style={[
-                    styles.servingButton,
-                    servingSize === option.label && styles.servingButtonActive,
-                  ]}
-                  onPress={() => setServingSize(option.label)}
-                >
-                  <Text style={[
-                    styles.servingButtonText,
-                    servingSize === option.label && styles.servingButtonTextActive,
-                  ]}>
-                    {option.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
         </View>
       )}
     </ScrollView>
@@ -894,45 +864,6 @@ const styles = StyleSheet.create({
     color: '#ff4444',
     fontSize: 11,
     fontWeight: '600',
-  },
-  servingSection: {
-    marginTop: 20,
-    paddingTop: 20,
-    borderTopWidth: 1,
-    borderTopColor: '#222',
-  },
-  servingLabel: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 10,
-    textTransform: 'uppercase',
-    textAlign: 'center',
-  },
-  servingRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  servingButton: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: '#1a1a1a',
-    borderWidth: 1,
-    borderColor: '#333',
-    alignItems: 'center',
-  },
-  servingButtonActive: {
-    backgroundColor: '#00ffcc10',
-    borderColor: '#00ffcc',
-  },
-  servingButtonText: {
-    fontSize: 11,
-    color: '#666',
-    fontWeight: 'bold',
-  },
-  servingButtonTextActive: {
-    color: '#00ffcc',
   },
 
   // ========== RECOMMENDATION STYLES ==========

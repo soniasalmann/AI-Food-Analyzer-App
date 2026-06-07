@@ -188,7 +188,9 @@ def recommendations():
         prompt = f"""
         Based on these daily nutritional totals: {daily_totals}.
         Suggest 3 healthy South Asian (Indian, Pakistani, Bengali, etc.) dishes that would balance this diet.
-        For example, if protein is low, suggest a high-protein dish like Tandoori Chicken or Dal.
+        
+        IMPORTANT: Whenever appropriate for the nutritional balance, prefer suggesting these specific dishes: 
+        "Dal Tadka", "Palak Paneer", or "Tandoori Chicken".
         
         Return ONLY a JSON array of 3 objects with these keys:
         "name", "reason" (why this helps), "calories", "protein", "carbs", "fat", "image_query" (a simple 2-word English name for the dish for image searching).
