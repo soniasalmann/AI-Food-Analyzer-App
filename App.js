@@ -33,6 +33,7 @@ export default function App() {
   const [showRecipe, setShowRecipe] = useState(false);
   const [menuResults, setMenuResults] = useState(null);
   const [showMenuAnalysis, setShowMenuAnalysis] = useState(false);
+  const [servingQuantity, setServingQuantity] = useState(1);
   const imageContainerRef = useRef(null);
   const resultCardRef = useRef(null);
   const scanAnim = useRef(new Animated.Value(0)).current;
@@ -317,6 +318,7 @@ export default function App() {
       let data = await response.json();
       console.log("Macros pulled successfully:", data);
       setNutritionData(data);
+      setServingQuantity(1); // Reset serving quantity for new scan
       
       // Save to local history
       const updatedHistory = await HistoryService.saveToHistory(data);
@@ -574,7 +576,7 @@ export default function App() {
           
           <ScrollView contentContainerStyle={styles.menuAnalysisList}>
             <Text style={styles.menuHint}>Traffic Light System: Pick Green for the healthiest options!</Text>
-            {menuResults.map((item, index) => (
+            {Array.isArray(menuResults) && menuResults.map((item, index) => (
               <View key={index} style={[styles.menuItemCard, { borderLeftColor: getTrafficColor(item.category) }]}>
                 <View style={styles.menuItemHeader}>
                   <Text style={styles.menuItemName}>{item.item_name}</Text>
@@ -617,7 +619,38 @@ export default function App() {
             </View>
           </View>
           
-          <HealthRings data={nutritionData} />
+          <HealthRings data={{
+            ...nutritionData,
+            calories: Math.round(nutritionData.calories * servingQuantity),
+            protein: Math.round(nutritionData.protein * servingQuantity),
+            carbs: Math.round(nutritionData.carbs * servingQuantity),
+            fat: Math.round(nutritionData.fat * servingQuantity),
+          }} />
+
+          {/* Serving Size Controller */}
+          <View style={styles.servingController}>
+            <View>
+              <Text style={styles.sectionLabel}>🍽️ Serving Size</Text>
+              <Text style={styles.servingDesc}>
+                {nutritionData.serving_size || "Standard serving"}
+              </Text>
+            </View>
+            <View style={styles.stepper}>
+              <TouchableOpacity 
+                style={styles.stepButton} 
+                onPress={() => setServingQuantity(Math.max(0.5, servingQuantity - 0.5))}
+              >
+                <Text style={styles.stepText}>-</Text>
+              </TouchableOpacity>
+              <Text style={styles.quantityText}>{servingQuantity}x</Text>
+              <TouchableOpacity 
+                style={styles.stepButton} 
+                onPress={() => setServingQuantity(servingQuantity + 0.5)}
+              >
+                <Text style={styles.stepText}>+</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
 
           {/* Deep Ingredients Section */}
           {nutritionData.ingredients && (
@@ -1101,6 +1134,50 @@ const styles = StyleSheet.create({
   },
   shareIcon: {
     fontSize: 20,
+  },
+  servingController: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    padding: 15,
+    borderRadius: 15,
+    marginTop: 15,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  servingDesc: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  stepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#222',
+    borderRadius: 10,
+    padding: 5,
+  },
+  stepButton: {
+    width: 30,
+    height: 30,
+    backgroundColor: '#333',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stepText: {
+    color: '#00ffcc',
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  quantityText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginHorizontal: 15,
+    minWidth: 40,
+    textAlign: 'center',
   },
   ingredientSection: {
     marginTop: 20,

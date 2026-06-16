@@ -40,7 +40,8 @@ Provide the following in a JSON object:
 8. "warnings": A list of short dietary warnings.
 9. "insight": A one-sentence professional nutrition tip.
 10. "ingredients": A list of predicted main ingredients.
-11. "healthy_recipe": A JSON object with:
+11. "serving_size": A descriptive string of the assumed serving size (e.g., "1 bowl", "250g", "6 pieces").
+12. "healthy_recipe": A JSON object with:
     - "improvements": A short list of how to make THIS dish healthier.
     - "steps": A 3-5 step simplified healthy recipe for this dish.
 
@@ -63,7 +64,8 @@ Provide the following in a JSON object:
 8. "warnings": A list of short dietary warnings.
 9. "insight": A one-sentence professional nutrition tip.
 10. "ingredients": A list of predicted main ingredients.
-11. "healthy_recipe": A JSON object with:
+11. "serving_size": A descriptive string of the assumed serving size (e.g., "1 bowl", "250g", "6 pieces").
+12. "healthy_recipe": A JSON object with:
     - "improvements": A short list of how to make THIS dish healthier.
     - "steps": A 3-5 step simplified healthy recipe for this dish.
 
